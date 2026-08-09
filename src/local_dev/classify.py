@@ -4,7 +4,7 @@ import time
 import random as pyrandom
 import os
 
-USE_MOCK = True
+USE_MOCK = False
 
 # Fill in the exact model ID you noted from the Bedrock model catalog page earlier
 MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"  # <-- confirm this matches what you saw on the model detail page

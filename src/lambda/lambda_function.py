@@ -12,7 +12,7 @@ REGION = "us-east-1"
 VALID_CATEGORIES = {"high risk", "potentially likely", "neutral", "unlikely"}
 SAMPLE_SIZE = 100
 RATE_PER_SEC = 10
-USE_MOCK = True  # flip to False once Bedrock quota clears
+USE_MOCK = False  # flip to False once Bedrock quota clears
 
 SYSTEM_PROMPT = """You are a content classification system that assesses tweets for suicide risk indicators. Your task is to classify a single tweet into exactly one of four categories based on the level of suicide risk expressed.
 
