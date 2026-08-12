@@ -1,7 +1,7 @@
 import pandas as pd
 import random
 
-CSV_PATH = "../data/Suicide_Ideation_Dataset_Twitter-based_.csv"
+CSV_PATH = "../../data/Suicide_Ideation_Dataset_Twitter-based_.csv"
 SAMPLE_SIZE = 100
 RANDOM_SEED = None  # set an integer here if you want reproducible samples during testing
 

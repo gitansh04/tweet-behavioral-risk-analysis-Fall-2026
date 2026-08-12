@@ -30,7 +30,9 @@ Important guidance:
 Output format:
 Respond with only the category label, exactly as written above (one of: high risk, potentially likely, neutral, unlikely), in lowercase, with no additional text, punctuation, explanation, or formatting."""
 
-_client = boto3.client("bedrock-runtime", region_name=REGION)
+#_client = boto3.client("bedrock-runtime", region_name=REGION)
+def _get_client():
+    return boto3.client("bedrock-runtime", region_name=REGION)
 
 MAX_RETRIES = 5
 BASE_DELAY = 1.0  # seconds
@@ -58,7 +60,9 @@ def _mock_classify(tweet_text):
     }
 
 
-def classify_tweet(tweet_text, max_retries=MAX_RETRIES):
+def classify_tweet(tweet_text, max_retries=MAX_RETRIES, client=None):
+    if client is None:
+        client = _get_client()
     if USE_MOCK:
         return _mock_classify(tweet_text)
     """
@@ -80,7 +84,7 @@ def classify_tweet(tweet_text, max_retries=MAX_RETRIES):
 
     for attempt in range(max_retries):
         try:
-            response = _client.invoke_model(
+            response = client.invoke_model(
                 modelId=MODEL_ID,
                 body=json.dumps(body),
             )
@@ -104,7 +108,7 @@ def classify_tweet(tweet_text, max_retries=MAX_RETRIES):
                 "error": None,
             }
 
-        except _client.exceptions.ThrottlingException as e:
+        except client.exceptions.ThrottlingException as e:
             last_error = str(e)
             # Exponential backoff with jitter: wait longer each retry, plus randomness
             # so multiple retries don't all collide again at the exact same moment
