@@ -12,7 +12,11 @@ REGION = "us-east-1"
 VALID_CATEGORIES = {"high risk", "potentially likely", "neutral", "unlikely"}
 SAMPLE_SIZE = 100
 RATE_PER_SEC = 10
-USE_MOCK = False  # flip to False once Bedrock quota clears
+USE_MOCK = False
+
+# Default S3 location for the normal (non-interview) dataset run
+DEFAULT_BUCKET = "tweet-risk-interview-files-gsharma"
+DEFAULT_KEY = "tweets_dataset.csv"
 
 SYSTEM_PROMPT = """You are a content classification system that assesses tweets for suicide risk indicators. Your task is to classify a single tweet into exactly one of four categories based on the level of suicide risk expressed.
 
@@ -25,24 +29,50 @@ Categories (choose exactly one):
 Important guidance:
 - Common hyperbolic expressions (e.g., "I could just die," "this is killing me," "kill me now" used about mundane frustrations like homework or a bad day) should generally be classified as neutral or unlikely based on context, not as risk indicators, unless combined with genuine distress signals.
 - Song lyrics, quotes, or clearly fictional/joking content should be classified based on whether the tweet's own framing suggests genuine personal distress, not the literal words alone.
-- If a tweet is ambiguous, choose the more conservative (higher-risk) category only when there is a reasonable indication of genuine distress — do not default to high risk for uncertain cases.
+- If a tweet is ambiguous, choose the more conservative (higher-risk) category only when there is a reasonable indication of genuine distress - do not default to high risk for uncertain cases.
 - Base your classification only on the content of the tweet provided. Do not ask for clarification or additional context.
 
 Output format:
 Respond with only the category label, exactly as written above (one of: high risk, potentially likely, neutral, unlikely), in lowercase, with no additional text, punctuation, explanation, or formatting."""
 
 _bedrock = boto3.client("bedrock-runtime", region_name=REGION)
+_s3 = boto3.client("s3")
+
+
+# ---------- S3 fetch ----------
+def download_csv_from_s3(bucket, key, local_path="/tmp/input.csv"):
+    """
+    Downloads the target CSV from S3 into Lambda's writable /tmp storage.
+    Using S3 (rather than bundling the CSV into the deployment zip) means a
+    new input file - like the interviewer's live assessment file - can be
+    swapped in without redeploying the function.
+    """
+    _s3.download_file(bucket, key, local_path)
+    return local_path
 
 
 # ---------- Sampling (no pandas) ----------
-def load_and_sample(csv_path, sample_size=SAMPLE_SIZE):
+def load_and_sample(csv_path, sample_size=SAMPLE_SIZE, sample_all=False):
+    """
+    Loads tweets from csv_path and returns a sample.
+
+    sample_all=True processes every row in the file instead of randomly
+    sampling - used for the interview assessment file, where the goal is
+    to classify every provided tweet rather than a random subset.
+    """
     rows = []
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            if row.get("Tweet") and row["Tweet"].strip():
-                rows.append(row["Tweet"])
-    return random.sample(rows, min(sample_size, len(rows)))
+            tweet = row.get("Tweet")
+            if tweet and tweet.strip():
+                rows.append(tweet)
+
+    if sample_all:
+        return rows
+
+    actual_sample_size = min(sample_size, len(rows))
+    return random.sample(rows, actual_sample_size)
 
 
 # ---------- Rate limiter ----------
@@ -153,30 +183,51 @@ def write_result(conn, tweet_text, suicide_likelihood, alert_of_risk):
 
 # ---------- Lambda entry point ----------
 def lambda_handler(event, context):
-    csv_path = "tweets_dataset.csv"  # see packaging note below
-    sample = load_and_sample(csv_path)
+    """
+    event fields (all optional):
+      bucket:     S3 bucket containing the input CSV (defaults to DEFAULT_BUCKET)
+      key:        S3 object key for the input CSV (defaults to DEFAULT_KEY)
+      sample_all: if true, process every row in the file instead of randomly
+                  sampling SAMPLE_SIZE rows. Use this for the interview
+                  assessment file.
+    """
+    bucket = event.get("bucket", DEFAULT_BUCKET)
+    key = event.get("key", DEFAULT_KEY)
+    sample_all = event.get("sample_all", False)
+
+    print(f"Downloading s3://{bucket}/{key} ...")
+    csv_path = download_csv_from_s3(bucket, key)
+
+    sample = load_and_sample(csv_path, sample_all=sample_all)
+    print(f"Loaded {len(sample)} tweet(s) from {key} (sample_all={sample_all})")
 
     conn = get_connection()
-    bucket = TokenBucket(rate=RATE_PER_SEC)
+    bucket_limiter = TokenBucket(rate=RATE_PER_SEC)
 
     success_count = 0
     error_count = 0
+    total = len(sample)
 
-    for tweet_text in sample:
-        bucket.acquire()
+    for i, tweet_text in enumerate(sample, start=1):
+        bucket_limiter.acquire()
         result = classify_tweet(tweet_text)
 
         if result["error"]:
             error_count += 1
+            print(f"[{i}/{total}] ERROR: {result['error']}")
             continue
 
         written = write_result(conn, tweet_text, result["suicide_likelihood"], result["alert_of_risk"])
         if written:
             success_count += 1
+            print(f"[{i}/{total}] {result['suicide_likelihood']} (alert={result['alert_of_risk']})")
         else:
             error_count += 1
+            print(f"[{i}/{total}] Classified but DB write failed.")
 
     conn.close()
+
+    print(f"Done. {success_count} succeeded, {error_count} failed.")
 
     return {
         "statusCode": 200,
